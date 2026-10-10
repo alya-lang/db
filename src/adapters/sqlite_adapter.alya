@@ -1,0 +1,96 @@
+## db SQLite Adapter
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+##
+## Binds the `db` Driver contract to the `sqlite` package. Requires the
+## `sqlite` feature (default-on) with its optional dependency; every symbol
+## here is gated so slim builds (`--no-default-features`) skip this file
+## entirely. Future drivers copy this file's shape: convert `Param` at the
+## boundary, wrap engine failures into `DbError`.
+
+@cfg(feature = "sqlite")
+import "sqlite" as sqlite
+
+import "../types.alya"
+
+@cfg(feature = "sqlite")
+function sqlite_text_of(p)
+    let s: string = p.sval
+    return sqlite::param_text(s)
+end
+
+## Converts one `db` Param to its `sqlite` twin.
+##
+## Payload bits pass through untouched; only the wrapper changes, so no
+## value conversion (and no mistag hazard) is involved.
+@cfg(feature = "sqlite")
+function sqlite_param_of(p)
+    when p.kind
+        is ParamKind.Int, 1 then return sqlite::param_int(p.ival)
+        is ParamKind.Float, 2 then return sqlite::param_float(p.fval)
+        is ParamKind.Text, 3 then return sqlite_text_of(p)
+        is ParamKind.Null, 4 then return sqlite::param_null()
+        is ParamKind.Blob, 5 then return sqlite::param_blob(p.bval)
+        else throw db_error(3, "sqlite adapter: unknown param kind")
+    end
+end
+
+@cfg(feature = "sqlite")
+function sqlite_params_of(params: array) -> array
+    let out = []
+    for p in params
+        out.push(sqlite_param_of(p))
+    end
+    return out
+end
+
+@cfg(feature = "sqlite")
+function sqlite_open(path: string)
+    try
+        if path == ":memory:"
+            return sqlite::open_memory()
+        end
+        return sqlite::open(path)
+    catch err
+        throw db_error(1, str(err))
+    end
+end
+
+@cfg(feature = "sqlite")
+function sqlite_close(handle) -> int
+    return sqlite::close(handle)
+end
+
+@cfg(feature = "sqlite")
+function sqlite_execute(handle, sql: string, params: array) -> int
+    try
+        return sqlite::execute_params(handle, sql, sqlite_params_of(params))
+    catch err
+        throw db_error(1, str(err))
+    end
+end
+
+@cfg(feature = "sqlite")
+function sqlite_query(handle, sql: string, params: array) -> array
+    try
+        return sqlite::query_params(handle, sql, sqlite_params_of(params))
+    catch err
+        throw db_error(1, str(err))
+    end
+end
+
+## Builds the sqlite-backed `Driver`.
+##
+## ### Returns
+## A `Driver` named `"sqlite"` running every hook through `sqlite`.
+##
+## ### Examples
+## ```alya
+## let conn = open(sqlite_driver(), ":memory:")
+## ```
+##
+## Requires the `sqlite` feature (default-on).
+@cfg(feature = "sqlite")
+pub function sqlite_driver() -> Driver
+    return Driver { name: "sqlite", open_fn: sqlite_open, close_fn: sqlite_close, execute_fn: sqlite_execute, query_fn: sqlite_query }
+end

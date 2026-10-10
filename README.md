@@ -16,6 +16,7 @@ Database driver interface, connection management, and query abstraction for Alya
 - 🧾 **Structured Errors**: Drivers throw catchable `DbError` structs (`code` + `message`) instead of raw strings.
 - 🔄 **Transactions Through One Facade**: `begin`/`commit`/`rollback` run over `execute`, so every driver gets them with zero extra surface.
 - 🪶 **Zero-Dependency Core**: Pure Alya, no C sources, no driver imports. Adapters live in driver packages and depend on `db`, never the reverse.
+- 🔗 **Bundled SQLite Adapter**: Optional `sqlite` slice (`src/adapters/`) binds the contract to `alya-lang/sqlite` with error normalization into `DbError`.
 - 🧪 **Mock-Tested Contract**: `tests/test_basic.alya` ships a complete in-memory mock driver proving every facade call, so future driver authors have a working reference.
 
 ---
@@ -55,6 +56,22 @@ Or install it directly using the Alya package CLI:
 ```bash
 alya add db --git https://github.com/alya-lang/db --branch main
 alya install
+```
+
+### Package Features
+
+| Feature | Default | Description |
+|:---|:---:|:---|
+| `sqlite` | ✅ | Bundled `sqlite` adapter (`sqlite_driver()` in `src/adapters/sqlite_adapter.alya`, with a fallback-free skip when disabled). |
+
+```bash
+# Full build (default)
+alya install
+alya test
+
+# Slim build (core only, no sqlite dependency)
+alya install --no-default-features
+alya test --no-default-features
 ```
 
 ---
@@ -137,6 +154,7 @@ main()
 | `db_error(code, message)` | `pub function` | Constructs a throwable `DbError`. |
 | `Driver` | `pub struct` | Driver contract (`name`, `open_fn`, `close_fn`, `execute_fn`, `query_fn`). |
 | `Conn` | `pub struct` | Open connection (`driver`, `handle`, `path`, `is_open`). |
+| `sqlite_driver()` | `pub function` (`sqlite` feature, default-on) | Builds the sqlite-backed `Driver` (see `src/adapters/sqlite_adapter.alya`). |
 
 > [!TIP]
 > **Internal Helpers & Documentation:** Public symbols carry `##` Markdown docstrings for `alya doc`. Drivers convert `Param` to native binds inside their adapter; see the mock driver in `tests/test_basic.alya` for the reference implementation.

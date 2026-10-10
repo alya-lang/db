@@ -293,10 +293,59 @@ function main()
     runner_assert_eq(r, c4.close(), 0, "Conn.close returns 0")
     pkg::close(c2)
 
+    # ═══════════════════════════════════════════════════════════
+    # 10. SQLite adapter (`sqlite` feature, default-on)
+    # ═══════════════════════════════════════════════════════════
+    test_sqlite_adapter(r)
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)
     end
+end
+
+@cfg(feature = "sqlite")
+function test_sqlite_adapter(r)
+    let driver = pkg::sqlite_driver()
+    runner_assert_str_eq(r, driver.name, "sqlite", "adapter driver name is sqlite")
+
+    let conn = pkg::open(driver, ":memory:")
+    pkg::execute(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL, payload BLOB, note TEXT);")
+    let n = pkg::execute(conn, "INSERT INTO users (name, score, payload, note) VALUES (?, ?, ?, ?);", [pkg::param_text("O'Brien"), pkg::param_float(19.99), pkg::param_blob([9, 8, 7]), pkg::param_null()])
+    runner_assert_eq(r, n, 1, "adapter insert affects 1 row")
+
+    let rows = pkg::query(conn, "SELECT name, score, payload, note FROM users WHERE name = ?;", [pkg::param_text("O'Brien")])
+    runner_assert_eq(r, len(rows), 1, "adapter query returns 1 row")
+    runner_assert_str_eq(r, rows[0]["name"], "O'Brien", "adapter text roundtrips")
+    runner_assert_str_eq(r, str(rows[0]["score"]), "19.99", "adapter float roundtrips via str()")
+    runner_assert_true(r, rows[0]["note"] is null, "adapter null stays null")
+    runner_assert_eq(r, len(rows[0]["payload"]), 3, "adapter blob roundtrips")
+    runner_assert_eq(r, pkg::query_scalar(conn, "SELECT count(*) FROM users;"), 1, "adapter scalar counts 1")
+
+    pkg::execute(conn, "CREATE TABLE bigints (val INTEGER);")
+    let big = 1099511627776
+    pkg::execute(conn, "INSERT INTO bigints (val) VALUES (?);", [pkg::param_int(big)])
+    let bigrows = pkg::query(conn, "SELECT val FROM bigints WHERE val = ?;", [pkg::param_int(big)])
+    runner_assert_eq(r, len(bigrows), 1, "adapter int64 row found")
+    runner_assert_eq(r, bigrows[0]["val"], big, "adapter int64 roundtrips")
+
+    pkg::begin(conn)
+    pkg::execute(conn, "INSERT INTO users (name) VALUES (?);", [pkg::param_text("tmp")])
+    pkg::rollback(conn)
+    runner_assert_eq(r, pkg::query_scalar(conn, "SELECT count(*) FROM users;"), 1, "adapter rollback undoes insert")
+
+    let badcode = 0
+    try
+        pkg::execute(conn, "SELECT * FROM no_such_table;", [])
+    catch err
+        badcode = err.code
+    end
+    runner_assert_eq(r, badcode, 1, "adapter engine error arrives as DbError code 1")
+    runner_assert_eq(r, conn.close(), 0, "adapter Conn.close returns 0")
+end
+
+@cfg(not(feature = "sqlite"))
+function test_sqlite_adapter(r)
 end
 
 main()

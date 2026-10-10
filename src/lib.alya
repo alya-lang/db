@@ -8,6 +8,8 @@
 ## package.
 
 import "./types.alya"
+@cfg(feature = "sqlite")
+import "./adapters/sqlite_adapter.alya"
 
 # ───────────────────────────────────────────────────────────────
 # Connections
