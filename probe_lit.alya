@@ -1,0 +1,18 @@
+import "./src/lib.alya" as pkg
+
+function show_fval(p)
+    say p.fval
+end
+
+function main()
+    say 19.99
+    let p = pkg::param_float(19.99)
+    say "direct field:"
+    say p.fval
+    say "via helper:"
+    show_fval(p)
+    say "str:"
+    say str(p.fval)
+end
+
+main()

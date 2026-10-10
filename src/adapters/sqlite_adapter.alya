@@ -19,15 +19,26 @@ function sqlite_text_of(p)
     return sqlite::param_text(s)
 end
 
+# Floats bind as round-trip text read from the construction-cached `sval`
+# (never through `bind_double`: FFI f64 arguments arrive corrupted on
+# System V x64 targets — alya-lang/alya#160 — and `fval` does not survive
+# multi-hop travel through untyped params). REAL-affinity columns convert
+# the text back losslessly.
+@cfg(feature = "sqlite")
+function sqlite_float_text(p)
+    let s: string = p.sval
+    return sqlite::param_text(s)
+end
+
 ## Converts one `db` Param to its `sqlite` twin.
 ##
-## Payload bits pass through untouched; only the wrapper changes, so no
-## value conversion (and no mistag hazard) is involved.
+## Integer, text, null, and blob payload bits pass through untouched; only
+## the wrapper changes. Floats take the text path (see above).
 @cfg(feature = "sqlite")
 function sqlite_param_of(p)
     when p.kind
         is ParamKind.Int, 1 then return sqlite::param_int(p.ival)
-        is ParamKind.Float, 2 then return sqlite::param_float(p.fval)
+        is ParamKind.Float, 2 then return sqlite_float_text(p)
         is ParamKind.Text, 3 then return sqlite_text_of(p)
         is ParamKind.Null, 4 then return sqlite::param_null()
         is ParamKind.Blob, 5 then return sqlite::param_blob(p.bval)

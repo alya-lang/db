@@ -50,8 +50,8 @@ end
 # (unboxed bits are indistinguishable from ints on read), so native
 # doubles would come back as int bit patterns. Same rule as real drivers.
 function mock_float_text(p) -> string
-    let f: float = p.fval
-    return str(f)
+    let s: string = p.sval
+    return s
 end
 
 function mock_value_of(p)
@@ -206,13 +206,10 @@ function main()
     pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("big"), pkg::param_int(1099511627776)])
     let rn = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("n")])
     runner_assert_eq(r, rn[0]["value"], 42, "int param roundtrips")
-    # Floats roundtrip through driver text semantics (map slots cannot
-    # retain float tags, so exactness is asserted as stability: two reads
-    # render identically. Real drivers prove exactness the same way the
-    # sqlite adapter does — shortest-round-trip text.)
-    let rf1 = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("f")])
-    let rf2 = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("f")])
-    runner_assert_str_eq(r, str(rf1[0]["value"]), str(rf2[0]["value"]), "float param roundtrips stably")
+    # Floats roundtrip through the construction-cached text rendering
+    # (same rule as real drivers: native floats do not survive travel).
+    let rf = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("f")])
+    runner_assert_str_eq(r, str(rf[0]["value"]), "19.99", "float param roundtrips")
     let rb = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("b")])
     runner_assert_eq(r, len(rb[0]["value"]), 4, "blob has 4 bytes")
     runner_assert_eq(r, rb[0]["value"][3], 255, "blob last byte is 255")

@@ -52,13 +52,18 @@ end
 
 ## Creates a float bound parameter.
 ##
+## The text rendering is cached into `sval` at construction, where `v` is
+## still statically proven: float payloads do not survive multi-hop travel
+## through untyped params and struct fields on current compilers, while
+## strings do. Drivers read floats from `sval`.
+##
 ## ### Parameters
 ## - `v`: Float value to bind.
 ##
 ## ### Returns
 ## A `Param` with `ParamKind.Float`.
 pub function param_float(v: float) -> Param
-    return Param { kind: ParamKind.Float, ival: 0, fval: v, sval: "", bval: [] }
+    return Param { kind: ParamKind.Float, ival: 0, fval: v, sval: str(v), bval: [] }
 end
 
 ## Creates a text bound parameter.
