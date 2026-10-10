@@ -135,6 +135,17 @@ function main()
     # 6. Method-call forms + close
     conn.execute("INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("m"), pkg::param_int(7)])
     say "6. Method insert ok; closing returns " + str(conn.close())
+
+    # 7. Pooled connections (explicit driver + path, no closures needed)
+    let pool = pkg::pooled_open(demo_driver(), ":memory:", 2)
+    let pc = pool.acquire()
+    pc.execute("INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("pooled"), pkg::param_int(1)])
+    pool.release(pc)
+    say "7. Pool size: " + str(pool.size()) + ", idle: " + str(pool.idle_count())
+    let pc2 = pool.acquire()
+    say "   Reused id: " + str(pc2.pool_id)
+    pool.release(pc2)
+    say "   Drained: " + str(pool.close())
     say "==========================================="
 end
 

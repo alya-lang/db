@@ -26,6 +26,27 @@ function stub_driver()
     return pkg::Driver { name: "stub", open_fn: stub_open, close_fn: stub_close, execute_fn: stub_execute, query_fn: stub_query }
 end
 
+# Slightly stateful mock driver for the pool bench (per-connection maps).
+function make_mock_driver()
+    return pkg::Driver { name: "bench-mock", open_fn: bench_open, close_fn: bench_close, execute_fn: bench_execute, query_fn: bench_query }
+end
+
+function bench_open(_path: string)
+    return map()
+end
+
+function bench_close(_handle) -> int
+    return 0
+end
+
+function bench_execute(_handle, _sql: string, _params: array) -> int
+    return 1
+end
+
+function bench_query(_handle, _sql: string, _params: array) -> array
+    return []
+end
+
 function main()
     let runner = bench_runner("db Micro-Benchmarks")
     let driver = stub_driver()
@@ -68,6 +89,19 @@ function main()
         m += 1
     end
     bench_stop(runner, "param_text 100k calls")
+
+    # Bench 5: pooled acquire/release on the mock driver — 10k iterations
+    let mock = make_mock_driver()
+    let pool = pkg::pooled_open(mock, ":memory:", 4)
+    bench_start(runner, 10000)
+    let q = 0
+    while q < 10000
+        let c = pool.acquire()
+        pool.release(c)
+        q += 1
+    end
+    bench_stop(runner, "pooled acquire/release 10k cycles")
+    pool.close()
 
     bench_summary(runner)
 end

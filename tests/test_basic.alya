@@ -291,7 +291,12 @@ function main()
     pkg::close(c2)
 
     # ═══════════════════════════════════════════════════════════
-    # 10. SQLite adapter (`sqlite` feature, default-on)
+    # 10. Connection pool (mock driver, explicit context)
+    # ═══════════════════════════════════════════════════════════
+    test_pool(r)
+
+    # ═══════════════════════════════════════════════════════════
+    # 11. SQLite adapter (`sqlite` feature, default-on)
     # ═══════════════════════════════════════════════════════════
     test_sqlite_adapter(r)
 
@@ -299,6 +304,63 @@ function main()
     if failed > 0
         exit(1)
     end
+end
+
+function test_pool(r)
+    let driver = make_mock_driver()
+    let bad_size = 0
+    try
+        pkg::pooled_open(driver, ":memory:", 0)
+    catch err
+        bad_size = err.code
+    end
+    runner_assert_eq(r, bad_size, 2, "pooled_open rejects non-positive max_size")
+
+    let pool = pkg::pooled_open(driver, ":memory:", 2)
+    runner_assert_eq(r, pool.size(), 0, "pool starts empty")
+    runner_assert_eq(r, pool.max_size, 2, "pool keeps max_size")
+
+    let a = pool.acquire()
+    runner_assert_true(r, a is not null, "acquire opens a connection")
+    runner_assert_eq(r, pool.size(), 1, "pool size is 1 after acquire")
+    runner_assert_eq(r, pool.active_count(), 1, "active count is 1")
+    runner_assert_eq(r, pool.idle_count(), 0, "idle count is 0")
+    pkg::execute(a, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("p"), pkg::param_int(9)])
+    runner_assert_eq(r, pool.release(a), 1, "release returns 1")
+    runner_assert_eq(r, pool.idle_count(), 1, "idle count is 1 after release")
+    runner_assert_eq(r, pool.active_count(), 0, "active count is 0 after release")
+
+    let b = pool.acquire()
+    runner_assert_eq(r, b.pool_id, a.pool_id, "acquire reuses idle connection")
+    runner_assert_eq(r, pool.release(b), 1, "release reused connection")
+
+    let p1 = pkg::pooled_open(driver, ":memory:", 1)
+    let x1 = p1.acquire()
+    runner_assert_true(r, x1 is not null, "single-slot acquire succeeds")
+    runner_assert_true(r, p1.acquire() is null, "exhausted acquire returns null")
+    runner_assert_eq(r, p1.release(x1), 1, "release into single-slot pool")
+    p1.close()
+
+    let c = pool.acquire()
+    runner_assert_eq(r, pool.invalidate(c), 1, "invalidate returns 1")
+    runner_assert_eq(r, pool.size(), 0, "pool size is 0 after invalidate")
+    runner_assert_true(r, c.is_open == false, "invalidated connection is closed")
+
+    let d = pool.acquire()
+    d.close()
+    runner_assert_eq(r, pool.release(d), 1, "release externally closed returns 1")
+    runner_assert_eq(r, pool.idle_count(), 0, "externally closed connection is dropped")
+    runner_assert_eq(r, pool.size(), 0, "pool size is 0 after drop")
+
+    let e1 = pool.acquire()
+    let e2 = pool.acquire()
+    runner_assert_eq(r, pool.active_count(), 2, "two concurrent loans")
+    runner_assert_eq(r, pool.release(e1), 1, "release first loan")
+    runner_assert_eq(r, pool.release(e2), 1, "release second loan")
+    runner_assert_eq(r, pool.close(), 2, "pool close drains 2 idle")
+    runner_assert_eq(r, pool.size(), 0, "pool size is 0 after close")
+    runner_assert_true(r, pool.acquire() is null, "acquire on closed pool returns null")
+    runner_assert_eq(r, pool.close(), 0, "double pool close drains 0")
 end
 
 @cfg(feature = "sqlite")

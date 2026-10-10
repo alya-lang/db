@@ -18,6 +18,7 @@ Database driver interface, connection management, and query abstraction for Alya
 - 🪶 **Zero-Dependency Core**: Pure Alya, no C sources, no driver imports. Adapters live in driver packages and depend on `db`, never the reverse.
 - 🔗 **Bundled SQLite Adapter**: Optional `sqlite` slice (`src/adapters/`) binds the contract to `alya-lang/sqlite` with error normalization into `DbError`.
 - 🧪 **Mock-Tested Contract**: `tests/test_basic.alya` ships a complete in-memory mock driver proving every facade call, so future driver authors have a working reference.
+- 🏊 **Explicit Connection Pooling**: Bounded `ConnPool` reuse without closures (`pooled_open`, `acquire`/`release`/`invalidate`, counts, drain). Needs no `pool` dependency: driver and path travel explicitly, which callback factories cannot express.
 
 ---
 
@@ -153,8 +154,15 @@ main()
 | `DbError` | `pub struct` | Thrown error payload (`code`, `message`). |
 | `db_error(code, message)` | `pub function` | Constructs a throwable `DbError`. |
 | `Driver` | `pub struct` | Driver contract (`name`, `open_fn`, `close_fn`, `execute_fn`, `query_fn`). |
-| `Conn` | `pub struct` | Open connection (`driver`, `handle`, `path`, `is_open`). |
+| `Conn` | `pub struct` | Open connection (`driver`, `handle`, `path`, `is_open`, `pool_id`). |
 | `sqlite_driver()` | `pub function` (`sqlite` feature, default-on) | Builds the sqlite-backed `Driver` (see `src/adapters/sqlite_adapter.alya`). |
+| `pooled_open(driver, path, max_size)` | `pub function` | Opens a bounded `ConnPool` (lazy connections, `max_size` must be positive). |
+| `ConnPool` | `pub struct` | Connection pool (`driver`, `path`, `max_size`, `idle`, `active`, `next_id`, `closed`). |
+| `ConnPool.acquire(self)` | `pub method` | Reuses idle or opens new below cap; null when closed/exhausted. |
+| `ConnPool.release(self, conn)` | `pub method` | Shelves the loan (drops externally closed ones). |
+| `ConnPool.invalidate(self, conn)` | `pub method` | Closes and discards a broken loan. |
+| `ConnPool.close(self)` | `pub method` | Drains idle loans; returns drained count. |
+| `ConnPool.size/idle_count/active_count(self)` | `pub method` | Pool gauges. |
 
 > [!TIP]
 > **Internal Helpers & Documentation:** Public symbols carry `##` Markdown docstrings for `alya doc`. Drivers convert `Param` to native binds inside their adapter; see the mock driver in `tests/test_basic.alya` for the reference implementation.

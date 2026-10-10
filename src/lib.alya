@@ -31,7 +31,7 @@ import "./adapters/sqlite_adapter.alya"
 pub function open(driver: Driver, path: string) -> Conn
     let open_fn = driver.open_fn
     let handle = open_fn(path)
-    return Conn { driver: driver, handle: handle, path: path, is_open: true }
+    return Conn { driver: driver, handle: handle, path: path, is_open: true, pool_id: 0 }
 end
 
 ## Closes a connection; closing twice safely returns `0`.
@@ -237,4 +237,165 @@ end
 ## Driver close result code integer.
 pub function Conn.close(self: Conn) -> int
     return close(self)
+end
+
+# ───────────────────────────────────────────────────────────────
+# Connection Pooling
+# ───────────────────────────────────────────────────────────────
+
+## Opens a bounded connection pool (lazy: connections open on acquire).
+##
+## ### Parameters
+## - `driver`: Driver used for pooled connections.
+## - `path`: Connection target string passed to `open_fn`.
+## - `max_size`: Maximum live connections; must be positive.
+##
+## ### Returns
+## An empty, open `ConnPool`.
+##
+## ### Examples
+## ```alya
+## let pool = pooled_open(driver, ":memory:", 10)
+## ```
+pub function pooled_open(driver: Driver, path: string, max_size: int = 10) -> ConnPool
+    if max_size <= 0
+        throw db_error(2, "Pool max_size must be positive")
+    end
+    return ConnPool { driver: driver, path: path, max_size: max_size, idle: [], active: [], next_id: 1, closed: false }
+end
+
+function pool_take_active(pool: ConnPool, id: int)
+    let kept = []
+    let found = null
+    for c in pool.active
+        if c.pool_id == id
+            found = c
+        else
+            kept.push(c)
+        end
+    end
+    pool.active = kept
+    return found
+end
+
+## Borrows a connection: reuses an idle one or opens a new one below cap.
+##
+## Externally closed idle connections are skipped. Returns null when the
+## pool is closed or exhausted.
+##
+## ### Parameters
+## - `self`: The target `ConnPool`.
+##
+## ### Returns
+## A `Conn` ready to use, or null.
+pub function ConnPool.acquire(self: ConnPool)
+    if self.closed == true
+        return null
+    end
+    while len(self.idle) > 0
+        let c = self.idle.pop()
+        if c.is_open == true
+            self.active.push(c)
+            return c
+        end
+    end
+    if len(self.active) + len(self.idle) >= self.max_size
+        return null
+    end
+    let conn = open(self.driver, self.path)
+    conn.pool_id = self.next_id
+    self.next_id += 1
+    self.active.push(conn)
+    return conn
+end
+
+## Returns a borrowed connection to the idle pool.
+##
+## Externally closed connections are dropped instead of shelved.
+##
+## ### Parameters
+## - `self`: The target `ConnPool`.
+## - `conn`: The borrowed `Conn` to return.
+##
+## ### Returns
+## `1` when shelved or dropped, `0` for null input.
+pub function ConnPool.release(self: ConnPool, conn) -> int
+    if conn is null
+        return 0
+    end
+    pool_take_active(self, conn.pool_id)
+    if conn.is_open == true
+        self.idle.push(conn)
+    end
+    return 1
+end
+
+## Discards a broken connection: closes it and drops it from the pool.
+##
+## ### Parameters
+## - `self`: The target `ConnPool`.
+## - `conn`: The broken `Conn` to discard.
+##
+## ### Returns
+## `1` when discarded, `0` for null input.
+pub function ConnPool.invalidate(self: ConnPool, conn) -> int
+    if conn is null
+        return 0
+    end
+    pool_take_active(self, conn.pool_id)
+    close(conn)
+    return 1
+end
+
+## Closes all idle connections and shuts the pool down.
+##
+## Active loans are left to their holders (release or invalidate them).
+##
+## ### Parameters
+## - `self`: The target `ConnPool`.
+##
+## ### Returns
+## Number of idle connections drained.
+pub function ConnPool.close(self: ConnPool) -> int
+    let n = 0
+    for c in self.idle
+        close(c)
+        n += 1
+    end
+    self.idle = []
+    self.closed = true
+    return n
+end
+
+## Returns the total live connection count (idle + active).
+##
+## ### Parameters
+## - `self`: The target `ConnPool`.
+##
+## ### Returns
+## Live connection count integer.
+pub function ConnPool.size(self: ConnPool) -> int
+    return len(self.idle) + len(self.active)
+end
+
+## Returns the idle connection count.
+##
+## ### Parameters
+## - `self`: The target `ConnPool`.
+##
+## ### Returns
+## Idle connection count integer.
+pub function ConnPool.idle_count(self: ConnPool) -> int
+    return len(self.idle)
+end
+
+## Returns the borrowed connection count.
+##
+## ### Parameters
+## - `self`: The target `ConnPool`.
+##
+## ### Returns
+## Active connection count integer.
+pub function ConnPool.active_count(self: ConnPool) -> int
+    return len(self.active)
 end

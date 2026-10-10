@@ -149,9 +149,36 @@ end
 ## - `handle`: Driver-defined native handle (kept opaque by this package).
 ## - `path`: Connection target string passed to `open_fn`.
 ## - `is_open`: `1` while open, `0` after close.
+## - `pool_id`: Pool checkout tag (`0` = unpooled; set by `ConnPool.acquire`).
 pub struct Conn
     driver
     handle
     path: string
     is_open: int
+    pool_id: int
+end
+
+## A bounded pool of reusable connections with explicit context.
+##
+## Unlike generic callback pools, every operation carries its driver and
+## path explicitly, so no closures are needed (Alya has no capturing
+## closures yet). Idle connections are reused in LIFO order; broken ones
+## are dropped via `invalidate`.
+##
+## ### Fields
+## - `driver`: Driver used to open pooled connections.
+## - `path`: Connection target string passed to `open_fn`.
+## - `max_size`: Maximum live connections (idle + active); `0` rejects.
+## - `idle`: Array of idle `Conn` available for reuse.
+## - `active`: Array of checked-out `Conn`.
+## - `next_id`: Counter assigning `pool_id` tags.
+## - `closed`: `1` after `close`, `0` otherwise.
+pub struct ConnPool
+    driver
+    path: string
+    max_size: int
+    idle
+    active
+    next_id: int
+    closed: int
 end
