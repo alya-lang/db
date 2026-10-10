@@ -19,11 +19,11 @@ function sqlite_text_of(p)
     return sqlite::param_text(s)
 end
 
-# Floats bind as round-trip text read from the construction-cached `sval`
-# (never through `bind_double`: FFI f64 arguments arrive corrupted on
-# System V x64 targets — alya-lang/alya#160 — and `fval` does not survive
-# multi-hop travel through untyped params). REAL-affinity columns convert
-# the text back losslessly.
+# Floats bind as round-trip text read from the construction-cached `sval`.
+# Two independent compiler gaps force this: FFI f64 arguments arrive
+# corrupted on pre-fix System V targets (alya-lang/alya#160), and `fval`
+# bits corrupt after multi-hop travel through untyped params on all
+# targets. REAL-affinity columns convert the text back losslessly.
 @cfg(feature = "sqlite")
 function sqlite_float_text(p)
     let s: string = p.sval
@@ -32,8 +32,7 @@ end
 
 ## Converts one `db` Param to its `sqlite` twin.
 ##
-## Integer, text, null, and blob payload bits pass through untouched; only
-## the wrapper changes. Floats take the text path (see above).
+## Payload bits pass through untouched; only the wrapper changes.
 @cfg(feature = "sqlite")
 function sqlite_param_of(p)
     when p.kind

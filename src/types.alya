@@ -53,9 +53,9 @@ end
 ## Creates a float bound parameter.
 ##
 ## The text rendering is cached into `sval` at construction, where `v` is
-## still statically proven: float payloads do not survive multi-hop travel
-## through untyped params and struct fields on current compilers, while
-## strings do. Drivers read floats from `sval`.
+## still statically proven: after multi-hop travel through untyped params
+## and struct fields, `fval` comes back with corrupted bits on current
+## compilers, while strings travel intact. Drivers read floats from `sval`.
 ##
 ## ### Parameters
 ## - `v`: Float value to bind.
