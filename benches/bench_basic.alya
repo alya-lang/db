@@ -4,74 +4,70 @@
 import "std/test"
 import "../src/lib.alya" as pkg
 
-function main()
-    let runner = bench_runner(f"db Micro-Benchmarks")
+# Minimal stub driver: canned answers, no state. Measures facade and
+# dispatch overhead, not driver work.
+function stub_open(_path: string)
+    return 0
+end
 
-    # Bench 1: hello() facade function — 100k iterations
-    bench_start(runner, 100000)
+function stub_close(_handle) -> int
+    return 0
+end
+
+function stub_execute(_handle, _sql: string, _params: array) -> int
+    return 1
+end
+
+function stub_query(_handle, _sql: string, _params: array) -> array
+    return []
+end
+
+function stub_driver()
+    return pkg::Driver { name: "stub", open_fn: stub_open, close_fn: stub_close, execute_fn: stub_execute, query_fn: stub_query }
+end
+
+function main()
+    let runner = bench_runner("db Micro-Benchmarks")
+    let driver = stub_driver()
+
+    # Bench 1: open/close cycle — 20k iterations
+    bench_start(runner, 20000)
     let i = 0
-    while i < 100000
-        pkg::hello("Alya")
+    while i < 20000
+        let conn = pkg::open(driver, ":memory:")
+        pkg::close(conn)
         i += 1
     end
-    bench_stop(runner, "hello() 100k calls")
+    bench_stop(runner, "open/close 20k cycles")
 
-    # Bench 2: process() default call — 100k iterations
-    bench_start(runner, 100000)
+    # Bench 2: execute with params — 20k iterations
+    let conn = pkg::open(driver, ":memory:")
+    bench_start(runner, 20000)
     let j = 0
-    while j < 100000
-        pkg::process()
+    while j < 20000
+        pkg::execute(conn, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("k"), pkg::param_int(j)])
         j += 1
     end
-    bench_stop(runner, "process() default 100k calls")
+    bench_stop(runner, "execute with params 20k calls")
 
-    # Bench 3: make_config + format_config — 50k iterations
-    bench_start(runner, 50000)
+    # Bench 3: query_scalar (miss path) — 20k iterations
+    bench_start(runner, 20000)
     let k = 0
-    while k < 50000
-        let cfg = pkg::new_config("bench", 1, pkg::DbPriority.High, pkg::DbStyle.Formal)
-        pkg::core_format_custom(cfg)
+    while k < 20000
+        pkg::query_scalar(conn, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("k")])
         k += 1
     end
-    bench_stop(runner, "new_config + format_custom 50k calls")
+    bench_stop(runner, "query_scalar 20k calls")
+    pkg::close(conn)
 
-    # Bench 4: process_batch with 10-element array — 10k iterations
-    let labels = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
-    bench_start(runner, 10000)
+    # Bench 4: param constructors — 100k iterations
+    bench_start(runner, 100000)
     let m = 0
-    while m < 10000
-        pkg::process_batch(labels)
+    while m < 100000
+        pkg::param_text("bench")
         m += 1
     end
-    bench_stop(runner, "process_batch 10-item list 10k calls")
-
-    # Bench 5: struct method cfg.summary() — 200k iterations
-    let summ_cfg = pkg::new_config("summary-bench", 5)
-    bench_start(runner, 200000)
-    let s = 0
-    while s < 200000
-        summ_cfg.summary()
-        s += 1
-    end
-    bench_stop(runner, "cfg.summary() 200k calls")
-
-    # Bench 6: clamp() utility — 500k iterations
-    bench_start(runner, 500000)
-    let c = 0
-    while c < 500000
-        pkg::clamp(c, 0, 100)
-        c += 1
-    end
-    bench_stop(runner, "clamp() utility 500k calls")
-
-    # Bench 7: repeat_string() utility — 10k iterations
-    bench_start(runner, 10000)
-    let r = 0
-    while r < 10000
-        pkg::repeat_string("bench", 10)
-        r += 1
-    end
-    bench_stop(runner, "repeat_string() 10k calls")
+    bench_stop(runner, "param_text 100k calls")
 
     bench_summary(runner)
 end

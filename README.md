@@ -11,45 +11,33 @@ Database driver interface, connection management, and query abstraction for Alya
 
 ## 🌟 Features
 
-- ⚡ **Lightweight & High Performance**: Minimal memory overhead, zero runtime bloat, and fast native execution
-- 🧩 **Modular Architecture**: Layered multi-module design featuring a clean public facade (`src/lib.alya`), rich data models (`src/types.alya`), and encapsulated core formatters (`src/core/formatter.alya`)
-- 🔒 **Public/Private Visibility (`pub`)**: Fine-grained export control with `pub` for public functions, structs, and enums, keeping internal helper functions private and encapsulated
-- 🎭 **Structural Duck Typing & Interfaces**: Dynamic interface dispatch (`Summarizable`, `Describable`) without brittle inheritance hierarchies
-- 📦 **Rich Domain Models & Enums**: Idiomatic `enum` types (`DbStatus`, `DbPriority`, `DbStyle`) and typed data containers (`DbConfig`, `DbResult`, `DbStats`)
-- 🎯 **Advanced Pattern Matching**: Clean branching with `when` expressions, range matching, and condition guards
-- 🛡️ **Defensive Result Pattern**: Structured error handling and outcome encapsulation with `ok_result` and `error_result`
-- 🧪 **Enterprise Test & Benchmark Suite**: 100% test coverage with standard assertions (`std/test`) and micro-benchmarking (`std/test` bench runner)
-- 🚩 **Feature-Gated API Slices**: Optional capability slices via `[features]` in `alya.toml` (`default = ["extras"]`) and `@cfg(feature = "extras")` gating with a `@cfg(not(feature = "extras"))` fallback stub (see `src/core/extras.alya`)
+- 🔌 **Driver Plug-in Model**: Databases plug in as plain `Driver` structs (four function hooks, no registry, no globals). Adding postgres or mysql tomorrow means constructing one more `Driver` — this package is never revised.
+- 🔒 **Explicitly-Typed Params**: `?` placeholders bind from `Param` values (`param_int`, `param_float`, `param_text`, `param_null`, `param_blob`), so quoting and injection handling are structural, not stringly.
+- 🧾 **Structured Errors**: Drivers throw catchable `DbError` structs (`code` + `message`) instead of raw strings.
+- 🔄 **Transactions Through One Facade**: `begin`/`commit`/`rollback` run over `execute`, so every driver gets them with zero extra surface.
+- 🪶 **Zero-Dependency Core**: Pure Alya, no C sources, no driver imports. Adapters live in driver packages and depend on `db`, never the reverse.
+- 🧪 **Mock-Tested Contract**: `tests/test_basic.alya` ships a complete in-memory mock driver proving every facade call, so future driver authors have a working reference.
 
 ---
 
 ## 📁 Project Architecture
 
-```
+```text
 db/
-├── .alyalint               # Linter configuration (rules, exclusions, severity overrides)
-├── .editorconfig           # Uniform formatting rules across IDEs and editors
-├── .gitignore              # Ecosystem standard ignore filters
-├── .vscode/                # VS Code workspace settings, DAP launch configurations & tasks
-├── alya.toml               # Package manifest with dependencies, [features] and optional [build]
-├── c/                      # (Optional) Native C sources for zero-dependency FFI packages
+├── alya.toml               # Package manifest (no required dependencies)
 ├── src/
-│   ├── lib.alya            # Public API facade (pub exports, re-exports & pipeline runners)
-│   ├── types.alya          # Data models, pub enums, pub structs, and struct methods
-│   ├── ffi.alya            # (Optional) Native extern "C" declarations
-│   └── core/               # Subdirectory module hierarchy
-│       ├── formatter.alya  # Domain formatting routines, salutation builders & pattern matchers
-│       └── extras.alya     # Feature-gated (`extras`) optional API slice with `@cfg` gating
+│   ├── lib.alya            # Public API facade (open/close/execute/query/scalars/transactions + Conn methods)
+│   └── types.alya          # ParamKind, Param + param_* ctors, DbError, Driver, Conn
 ├── examples/
-│   └── demo.alya           # Comprehensive runnable walkthrough of all package capabilities
+│   └── demo.alya           # Runnable walkthrough on a minimal in-memory driver
 ├── tests/
-│   └── test_basic.alya     # Automated test suite with 100% feature coverage
+│   └── test_basic.alya     # Contract suite incl. a full mock driver (KV store with real rollback)
 └── benches/
-    └── bench_basic.alya    # Micro-benchmarks measuring performance and throughput
+    └── bench_basic.alya    # Facade + dispatch micro-benchmarks (stub driver)
 ```
 
 > [!NOTE]
-> **Visibility & Modularity:** Symbols annotated with `pub` (`pub function`, `pub struct`, `pub enum`, `pub interface`) are exported to external consumers and re-exporting modules. Symbols without `pub` remain strictly internal to their declaring module, preventing symbol collisions and implementation leakage.
+> **Visibility & Modularity:** Symbols annotated with `pub` are exported to external consumers. Symbols without `pub` remain strictly internal to their declaring module.
 
 ---
 
@@ -69,22 +57,6 @@ alya add db --git https://github.com/alya-lang/db --branch main
 alya install
 ```
 
-### Package Features
-
-| Feature | Default | Description |
-|:---|:---:|:---|
-| `extras` | ✅ | Optional capability slice (`extra_greeting` in `src/core/extras.alya`, with a fallback stub when disabled). |
-
-```bash
-# Full build (default)
-alya install
-alya test
-
-# Slim build (core only)
-alya install --no-default-features
-alya test --no-default-features
-```
-
 ---
 
 ## 🚀 Quick Start
@@ -92,19 +64,38 @@ alya test --no-default-features
 ```alya
 import "db" as pkg
 
+# A minimal driver is four functions; real drivers do real I/O here.
+function mem_open(path: string)
+    return map()
+end
+
+function mem_close(handle) -> int
+    return 0
+end
+
+function mem_execute(handle, sql: string, params: array) -> int
+    return 1
+end
+
+function mem_query(handle, sql: string, params: array) -> array
+    return [{ "v": 41 }]
+end
+
 function main()
-    # 1. Basic facade call with default parameter
-    let greeting = pkg::hello()
-    say f"Greeting:  {greeting}"
+    let driver = pkg::Driver { name: "mem", open_fn: mem_open, close_fn: mem_close, execute_fn: mem_execute, query_fn: mem_query }
 
-    # 2. Struct configuration with priority, style, and methods
-    let cfg = pkg::new_config("Community", 5, pkg::DbPriority.High, pkg::DbStyle.Formal)
-    say f"Summary:   {cfg.summary()}"
-    say f"Formatted: {pkg::core_format_custom(cfg)}"
+    # 1. Open a connection through the driver value
+    let conn = pkg::open(driver, ":memory:")
 
-    # 3. Processing pipeline returning Result model
-    let res = pkg::process("Analytics", 3, pkg::DbPriority.Critical)
-    say f"Outcome:   {res.message}"
+    # 2. Parameterized write (quotes need no escaping)
+    pkg::execute(conn, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("name"), pkg::param_text("O'Brien")])
+
+    # 3. Scalar read
+    let visits = pkg::query_scalar(conn, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("visits")])
+    say f"Visits: {visits}"
+
+    # 4. Close
+    pkg::close(conn)
 end
 
 main()
@@ -114,47 +105,41 @@ main()
 
 ## 📖 API Reference
 
-| Symbol | Visibility | Description |
+### Connections
+
+| Function | Arguments | Returns | Description |
+|---|---|---|---|
+| `open(driver, path)` | `driver: Driver, path: str` | `Conn` | Opens a connection through the driver's `open_fn` hook. |
+| `close(conn)` | `conn: Conn` | `i32` | Closes the connection via `close_fn`; double close safely returns `0`. |
+| `Conn.execute(self, sql, params)` | `sql: str, params: Array` | `i32` | Method form of `execute`. |
+| `Conn.query(self, sql, params)` | `sql: str, params: Array` | `Array` | Method form of `query`. |
+| `Conn.query_scalar(self, sql, params)` | `sql: str, params: Array` | `value` | Method form of `query_scalar`. |
+| `Conn.begin/commit/rollback(self)` | none | `i32` | Method forms of the transaction helpers. |
+| `Conn.close(self)` | none | `i32` | Method form of `close`. |
+
+### Query Execution
+
+| Function | Arguments | Returns | Description |
+|---|---|---|---|
+| `execute(conn, sql, params)` | `conn: Conn, sql: str, params: Array<Param>` | `i32` | Runs a statement with bound `?` parameters; returns affected row count. |
+| `query(conn, sql, params)` | `conn: Conn, sql: str, params: Array<Param>` | `Array` | Runs a `SELECT` with bound params; returns row maps. |
+| `query_scalar(conn, sql, params)` | `conn: Conn, sql: str, params: Array<Param>` | `value` | First column of the first row, or null when empty. |
+| `begin(conn)` / `commit(conn)` / `rollback(conn)` | `conn: Conn` | `i32` | Transaction control over `execute`. |
+
+### Parameters & Models
+
+| Symbol | Kind | Description |
 |---|---|---|
-| `hello(name = "World")` | `pub function` | Returns a formatted greeting string. Defaults to `"World"` if null or empty. |
-| `new_config(name, count, priority, style)` | `pub function` | Factory constructing a `DbConfig` with sensible defaults. |
-| `make_config(name, count, priority, style, enabled, tags)` | `pub function` | Full constructor for `DbConfig`. |
-| `process(label, count, priority)` | `pub function` | Runs processing pipeline, returning an `ok_result` `DbResult`. |
-| `process_batch(labels)` | `pub function` | Formats an array of labels in batch, returning an array of strings. |
-| `ok_result(value, message)` | `pub function` | Constructs a successful `DbResult` container (`status = 0`). |
-| `error_result(message, errors)` | `pub function` | Constructs a failed `DbResult` container (`status = 1`). |
-| `make_stats(total, passed, failed, skipped)` | `pub function` | Constructs a `DbStats` metrics record. |
-| `format_summary(cfg)` | `pub function` | Formats summary of a config instance (satisfies `Summarizable`). |
-| `format_description(cfg)` | `pub function` | Formats description of a config instance (satisfies `Describable`). |
-| `format_config(config)` | `pub function` | Multi-field formatter producing descriptive overview of a `DbConfig`. |
-| `format_result(result)` | `pub function` | Formats a `DbResult` into `[OK]` or `[ERROR]` status line. |
-| `format_stats(stats)` | `pub function` | Formats total checked items and success rate percentage. |
-| `clamp(n, min_val, max_val)` | `pub function` | Clamps an integer value to the closed range `[min_val, max_val]`. |
-| `pluralize(n, singular, plural)` | `pub function` | Pattern-matches count to return singular or plural noun form. |
-| `repeat_string(label, count)` | `pub function` | Repeats a string into an array of `count` items. |
-| `extra_greeting(name = "World")` | `pub function` (`extras` feature, default-on) | Enthusiastic greeting slice gated by `@cfg(feature = "extras")`; stub throws a descriptive error when the feature is off. |
-| `Summarizable` | `pub interface` | Structural contract requiring `summary(self) -> string`. |
-| `Describable` | `pub interface` | Structural contract requiring `describe(self) -> string` and `is_valid(self) -> int`. |
-| `DbStatus` | `pub enum` | Lifecycle status codes (`Pending = 0`, `Active = 1`, `Archived = 2`, `Error = 3`). |
-| `DbPriority` | `pub enum` | Priority tiers (`Low = 0`, `Normal = 1`, `High = 2`, `Critical = 3`). |
-| `DbStyle` | `pub enum` | Presentation styles (`Standard = 0`, `Formal = 1`, `Casual = 2`). |
-| `DbConfig` | `pub struct` | Primary configuration model (`name`, `count`, `priority`, `style`, `enabled`, `tags`). |
-| `DbConfig.summary()` | `pub method` | Single-line formatted summary (satisfies `Summarizable`). |
-| `DbConfig.describe()` | `pub method` | Detailed multi-field description (satisfies `Describable`). |
-| `DbConfig.is_valid()` | `pub method` | Validation guard returning 1 if valid, 0 otherwise. |
-| `DbConfig.is_enabled()` | `pub method` | Returns 1 if active, 0 if disabled. |
-| `DbConfig.with_name(new_name)` | `pub method` | Immutable copy with updated name. |
-| `DbConfig.with_priority(new_prio)` | `pub method` | Immutable copy with updated priority tier. |
-| `DbResult` | `pub struct` | Operation outcome model (`value`, `status`, `message`, `errors`). |
-| `DbResult.is_ok()` | `pub method` | Returns 1 if successful (`status == 0`), 0 otherwise. |
-| `DbResult.is_error()` | `pub method` | Returns 1 if error (`status != 0`), 0 otherwise. |
-| `DbResult.unwrap_or(fallback)` | `pub method` | Returns message on success, or fallback on error. |
-| `DbStats` | `pub struct` | Run statistics model (`total`, `passed`, `failed`, `skipped`). |
-| `DbStats.total_checked()` | `pub method` | Sum of passed and failed items count. |
-| `DbStats.success_rate()` | `pub method` | Computed percentage string (e.g. `"95%"`). |
+| `param_int(v)` / `param_float(v)` / `param_text(v)` / `param_null()` / `param_blob(v)` | `pub function` | Explicitly-typed `?` placeholder constructors. |
+| `ParamKind` | `pub enum` | Placeholder kinds (`Int = 1`, `Float = 2`, `Text = 3`, `Null = 4`, `Blob = 5`). |
+| `Param` | `pub struct` | Bound parameter (`kind`, `ival`, `fval`, `sval`, `bval`). |
+| `DbError` | `pub struct` | Thrown error payload (`code`, `message`). |
+| `db_error(code, message)` | `pub function` | Constructs a throwable `DbError`. |
+| `Driver` | `pub struct` | Driver contract (`name`, `open_fn`, `close_fn`, `execute_fn`, `query_fn`). |
+| `Conn` | `pub struct` | Open connection (`driver`, `handle`, `path`, `is_open`). |
 
 > [!TIP]
-> **Internal Helpers & Documentation:** Public symbols are documented with `##` Markdown docstrings, enabling automatic API documentation generation via `alya doc`. Private functions such as `build_salutation` and `build_priority_label` in `src/core/formatter.alya` are not annotated with `pub` and remain encapsulated within their respective modules.
+> **Internal Helpers & Documentation:** Public symbols carry `##` Markdown docstrings for `alya doc`. Drivers convert `Param` to native binds inside their adapter; see the mock driver in `tests/test_basic.alya` for the reference implementation.
 
 ---
 
@@ -164,13 +149,6 @@ Run the automated test suite using `alya test`:
 
 ```bash
 alya test
-```
-
-Exercise feature selection (the `extras` slice is default-on):
-
-```bash
-alya test --features extras
-alya test --no-default-features
 ```
 
 Generate static API documentation:
@@ -205,15 +183,6 @@ alya lint . --check
 
 ---
 
-### 💻 Developer Tooling & VS Code Integration
-
-This package comes preconfigured with recommended workspace settings and tasks for **Visual Studio Code**:
-- **LSP & Formatting**: Auto-formatting on save and real-time Language Server diagnostics via `alya-lang.vscode-alya`.
-- **DAP Debugging**: Launch configurations in `.vscode/launch.json` ready for interactive step-debugging via `F5`.
-- **Predefined Tasks**: Press `Ctrl+Shift+B` or run tasks (`Test`, `Lint`, `Format`, `Build Docs`) directly from the Command Palette.
-
----
-
 ## 🤝 Contributing
 
 Contributions are welcome! Please follow these steps:
@@ -227,6 +196,7 @@ Contributions are welcome! Please follow these steps:
 4. Verify tests and formatting before opening a PR:
    ```bash
    alya test
+   alya fmt . --check
    ```
 5. Commit your changes (`git commit -m "feat: add feature"`) and open a Pull Request
 

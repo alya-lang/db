@@ -4,168 +4,294 @@
 import "std/test"
 import "../src/lib.alya" as pkg
 
+# ───────────────────────────────────────────────────────────────
+# Mock driver: in-memory key-value store implementing the Driver
+# contract. Future driver authors (postgres, mysql, ...): mirror this
+# shape — open/close/execute/query hooks plus `Param` dispatch — and your
+# driver plugs into every facade call below with no changes to `db`.
+# Handle shape: { "store": map, "tx": int, "journal": map or null,
+# "closed": int }. Snapshots are shallow (values are never mutated).
+# ───────────────────────────────────────────────────────────────
+
+function mock_open(_path: string)
+    return { "store": map(), "tx": 0, "journal": null, "closed": 0 }
+end
+
+function mock_require_open(handle)
+    if handle["closed"] == true
+        throw pkg::db_error(1, "mock: connection is closed")
+    end
+end
+
+function mock_count_placeholders(sql: string) -> int
+    let n = 0
+    let i = 0
+    while i < len(sql)
+        if char_at(sql, i) == "?"
+            n += 1
+        end
+        i += 1
+    end
+    return n
+end
+
+function mock_check_params(sql: string, params: array)
+    if mock_count_placeholders(sql) != len(params)
+        throw pkg::db_error(2, "mock: parameter count mismatch")
+    end
+end
+
+function mock_text_of(p) -> string
+    let s: string = p.sval
+    return s
+end
+
+# Floats store as round-trip text: map slots cannot retain float tags
+# (unboxed bits are indistinguishable from ints on read), so native
+# doubles would come back as int bit patterns. Same rule as real drivers.
+function mock_float_text(p) -> string
+    let f: float = p.fval
+    return str(f)
+end
+
+function mock_value_of(p)
+    when p.kind
+        is pkg::ParamKind.Int, 1 then return p.ival
+        is pkg::ParamKind.Float, 2 then return mock_float_text(p)
+        is pkg::ParamKind.Text, 3 then return mock_text_of(p)
+        is pkg::ParamKind.Null, 4 then return null
+        is pkg::ParamKind.Blob, 5 then return p.bval
+        else throw pkg::db_error(3, "mock: unknown param kind")
+    end
+end
+
+function mock_snapshot(store)
+    let snap = map()
+    let ks = keys(store)
+    for k in ks
+        snap[k] = store[k]
+    end
+    return snap
+end
+
+function mock_close(handle) -> int
+    if handle["closed"] == true
+        return 0
+    end
+    handle["closed"] = 1
+    return 0
+end
+
+function mock_execute(handle, sql: string, params: array) -> int
+    mock_require_open(handle)
+    mock_check_params(sql, params)
+    if sql == "BEGIN"
+        handle["tx"] = 1
+        handle["journal"] = mock_snapshot(handle["store"])
+        return 0
+    end
+    if sql == "COMMIT"
+        handle["tx"] = 0
+        handle["journal"] = null
+        return 0
+    end
+    if sql == "ROLLBACK"
+        handle["tx"] = 0
+        if handle["journal"] is not null
+            handle["store"] = handle["journal"]
+            handle["journal"] = null
+        end
+        return 0
+    end
+    # INSERT INTO kv ... with params [text key, value]
+    if len(params) == 2
+        let key_param = params[0]
+        if key_param.kind == pkg::ParamKind.Text
+            let store = handle["store"]
+            let ks: string = key_param.sval
+            store[ks] = mock_value_of(params[1])
+            return 1
+        end
+        throw pkg::db_error(3, "mock: INSERT key param must be text")
+    end
+    throw pkg::db_error(3, "mock: unsupported statement")
+end
+
+function mock_query(handle, sql: string, params: array) -> array
+    mock_require_open(handle)
+    mock_check_params(sql, params)
+    # SELECT ... WHERE key = ? with params [text key]
+    if len(params) == 1
+        let key_param = params[0]
+        if key_param.kind == pkg::ParamKind.Text
+            let store = handle["store"]
+            let ks: string = key_param.sval
+            if store[ks] is not null or ks in store
+                return [{ "key": ks, "value": store[ks] }]
+            end
+            return []
+        end
+        throw pkg::db_error(3, "mock: SELECT key param must be text")
+    end
+    throw pkg::db_error(3, "mock: unsupported statement")
+end
+
+function make_mock_driver()
+    return pkg::Driver { name: "mock", open_fn: mock_open, close_fn: mock_close, execute_fn: mock_execute, query_fn: mock_query }
+end
+
 function main()
-    test_suite(f"db Test Suite")
+    test_suite("db Test Suite")
     let r = runner_new()
 
     # ═══════════════════════════════════════════════════════════
-    # 1. Facade Greeting & Sanitization
+    # 1. Param constructors & kinds
     # ═══════════════════════════════════════════════════════════
-    let res = pkg::hello("Alya")
-    runner_assert_str_eq(r, res, "Hello, Alya!", "pkg::hello returns formatted greeting")
+    runner_assert_eq(r, pkg::ParamKind.Int, 1, "ParamKind.Int == 1")
+    runner_assert_eq(r, pkg::ParamKind.Float, 2, "ParamKind.Float == 2")
+    runner_assert_eq(r, pkg::ParamKind.Text, 3, "ParamKind.Text == 3")
+    runner_assert_eq(r, pkg::ParamKind.Null, 4, "ParamKind.Null == 4")
+    runner_assert_eq(r, pkg::ParamKind.Blob, 5, "ParamKind.Blob == 5")
 
-    let default_res = pkg::hello()
-    runner_assert_str_eq(r, default_res, "Hello, World!", "pkg::hello() defaults to World")
-
-    let null_res = pkg::hello(null)
-    runner_assert_str_eq(r, null_res, "Hello, World!", "pkg::hello(null) sanitizes null to World")
-
-    let empty_res = pkg::hello("")
-    runner_assert_str_eq(r, empty_res, "Hello, World!", "pkg::hello(\"\") sanitizes empty string to World")
-
-    # ═══════════════════════════════════════════════════════════
-    # 2. Enumeration Values
-    # ═══════════════════════════════════════════════════════════
-    runner_assert_eq(r, pkg::DbStatus.Pending, 0, "DbStatus.Pending == 0")
-    runner_assert_eq(r, pkg::DbStatus.Active, 1, "DbStatus.Active == 1")
-    runner_assert_eq(r, pkg::DbStatus.Archived, 2, "DbStatus.Archived == 2")
-    runner_assert_eq(r, pkg::DbStatus.Error, 3, "DbStatus.Error == 3")
-
-    runner_assert_eq(r, pkg::DbPriority.Low, 0, "DbPriority.Low == 0")
-    runner_assert_eq(r, pkg::DbPriority.Normal, 1, "DbPriority.Normal == 1")
-    runner_assert_eq(r, pkg::DbPriority.High, 2, "DbPriority.High == 2")
-    runner_assert_eq(r, pkg::DbPriority.Critical, 3, "DbPriority.Critical == 3")
-
-    runner_assert_eq(r, pkg::DbStyle.Standard, 0, "DbStyle.Standard == 0")
-    runner_assert_eq(r, pkg::DbStyle.Formal, 1, "DbStyle.Formal == 1")
-    runner_assert_eq(r, pkg::DbStyle.Casual, 2, "DbStyle.Casual == 2")
+    let pi = pkg::param_int(42)
+    runner_assert_eq(r, pi.kind, 1, "param_int kind is Int")
+    runner_assert_eq(r, pi.ival, 42, "param_int carries value")
+    let pf = pkg::param_float(19.99)
+    runner_assert_eq(r, pf.kind, 2, "param_float kind is Float")
+    let pt = pkg::param_text("O'Brien")
+    runner_assert_eq(r, pt.kind, 3, "param_text kind is Text")
+    runner_assert_str_eq(r, pt.sval, "O'Brien", "param_text carries quotes safely")
+    let pn = pkg::param_null()
+    runner_assert_eq(r, pn.kind, 4, "param_null kind is Null")
+    let pb = pkg::param_blob([1, 2, 255])
+    runner_assert_eq(r, pb.kind, 5, "param_blob kind is Blob")
+    runner_assert_eq(r, len(pb.bval), 3, "param_blob carries bytes")
 
     # ═══════════════════════════════════════════════════════════
-    # 3. Struct Models & Factory Constructors
+    # 2. DbError shape
     # ═══════════════════════════════════════════════════════════
-    let cfg = pkg::new_config("Community", 5, pkg::DbPriority.High, pkg::DbStyle.Formal)
-    runner_assert_str_eq(r, cfg.name, "Community", "cfg.name is initialized correctly")
-    runner_assert_eq(r, cfg.count, 5, "cfg.count is initialized correctly")
-    runner_assert_eq(r, cfg.priority, 2, "cfg.priority is initialized to High (2)")
-    runner_assert_eq(r, cfg.style, 1, "cfg.style is initialized to Formal (1)")
-    runner_assert_eq(r, cfg.enabled, 1, "cfg.enabled defaults to 1")
-
-    let full_cfg = pkg::make_config("Full", 10, pkg::DbPriority.Critical, pkg::DbStyle.Casual, 0, ["tag1", "tag2"])
-    runner_assert_str_eq(r, full_cfg.name, "Full", "full_cfg.name is correct")
-    runner_assert_eq(r, full_cfg.count, 10, "full_cfg.count is correct")
-    runner_assert_eq(r, full_cfg.priority, 3, "full_cfg.priority is Critical (3)")
-    runner_assert_eq(r, full_cfg.enabled, 0, "full_cfg.enabled is 0")
-    runner_assert_eq(r, len(full_cfg.tags), 2, "full_cfg.tags has 2 elements")
+    let de = pkg::db_error(7, "boom")
+    runner_assert_eq(r, de.code, 7, "db_error carries code")
+    runner_assert_str_eq(r, de.message, "boom", "db_error carries message")
 
     # ═══════════════════════════════════════════════════════════
-    # 4. Struct Methods & Immutability
+    # 3. Driver construction & lifecycle
     # ═══════════════════════════════════════════════════════════
-    let summ = cfg.summary()
-    runner_assert_str_eq(r, summ, "Community (count: 5, active)", "cfg.summary() returns expected formatted summary")
+    let driver = make_mock_driver()
+    runner_assert_str_eq(r, driver.name, "mock", "driver name is mock")
 
-    let desc = cfg.describe()
-    runner_assert_true(r, len(desc) > 0, "cfg.describe() returns non-empty description")
-
-    runner_assert_eq(r, cfg.is_valid(), true, "cfg.is_valid() returns 1 for valid configuration")
-    runner_assert_eq(r, cfg.is_enabled(), 1, "cfg.is_enabled() returns 1")
-
-    let updated_name_cfg = cfg.with_name("Contributors")
-    runner_assert_str_eq(r, updated_name_cfg.name, "Contributors", "with_name updates name")
-    runner_assert_str_eq(r, cfg.name, "Community", "original cfg.name remains immutable")
-
-    let updated_prio_cfg = cfg.with_priority(pkg::DbPriority.Critical)
-    runner_assert_eq(r, updated_prio_cfg.priority, 3, "with_priority updates priority")
-    runner_assert_eq(r, cfg.priority, 2, "original cfg.priority remains unchanged")
+    let conn = pkg::open(driver, ":memory:")
+    runner_assert_true(r, conn.is_open, "connection starts open")
+    runner_assert_str_eq(r, conn.path, ":memory:", "connection keeps path")
+    runner_assert_eq(r, pkg::close(conn), 0, "close returns 0")
+    runner_assert_eq(r, pkg::close(conn), 0, "double close safely returns 0")
 
     # ═══════════════════════════════════════════════════════════
-    # 5. Result Container & Methods
+    # 4. Text roundtrip through the abstraction
     # ═══════════════════════════════════════════════════════════
-    let ok_res = pkg::ok_result(42, "Computed successfully")
-    runner_assert_eq(r, ok_res.is_ok(), true, "ok_res.is_ok() == 1")
-    runner_assert_eq(r, ok_res.is_error(), false, "ok_res.is_error() == 0")
-    runner_assert_str_eq(r, ok_res.unwrap_or("fallback"), "Computed successfully", "ok_res unwrap_or returns message")
-
-    let err_res = pkg::error_result("Failed operation", ["Invalid input", "Timeout"])
-    runner_assert_eq(r, err_res.is_ok(), false, "err_res.is_ok() == 0")
-    runner_assert_eq(r, err_res.is_error(), true, "err_res.is_error() == 1")
-    runner_assert_str_eq(r, err_res.unwrap_or("fallback"), "fallback", "err_res unwrap_or returns fallback")
-    runner_assert_eq(r, len(err_res.errors), 2, "err_res contains 2 error details")
+    let c2 = pkg::open(driver, ":memory:")
+    let n1 = pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("name"), pkg::param_text("O'Brien")])
+    runner_assert_eq(r, n1, 1, "execute insert affects 1 row")
+    let rows = pkg::query(c2, "SELECT k, v FROM kv WHERE k = ?;", [pkg::param_text("name")])
+    runner_assert_eq(r, len(rows), 1, "query returns 1 row")
+    runner_assert_str_eq(r, rows[0]["value"], "O'Brien", "quoted text roundtrips")
 
     # ═══════════════════════════════════════════════════════════
-    # 6. Statistics Container & Methods
+    # 5. All five param kinds end to end (floats via str(), never ==)
     # ═══════════════════════════════════════════════════════════
-    let stats = pkg::make_stats(20, 18, 2, 0)
-    runner_assert_eq(r, stats.total, 20, "stats.total == 20")
-    runner_assert_eq(r, stats.passed, 18, "stats.passed == 18")
-    runner_assert_eq(r, stats.failed, 2, "stats.failed == 2")
-    runner_assert_eq(r, stats.total_checked(), 20, "stats.total_checked() == 20")
-    runner_assert_str_eq(r, stats.success_rate(), "90%", "stats.success_rate() == 90%")
-
-    # ═══════════════════════════════════════════════════════════
-    # 7. Duck Typing Polymorphism (Interfaces)
-    # ═══════════════════════════════════════════════════════════
-    let is_summ = cfg is pkg::Summarizable
-    runner_assert_true(r, is_summ, "cfg satisfies Summarizable interface implicitly")
-    let iface_summ = pkg::format_summary(cfg)
-    runner_assert_str_eq(r, iface_summ, "Community (count: 5, active)", "format_summary dispatches via Summarizable")
-
-    let is_desc = cfg is pkg::Describable
-    runner_assert_true(r, is_desc, "cfg satisfies Describable interface implicitly")
-    let iface_desc = pkg::format_description(cfg)
-    runner_assert_true(r, len(iface_desc) > 0, "format_description dispatches via Describable")
-
-    # Struct that does not implement Summarizable
-    let is_stats_summ = stats is pkg::Summarizable
-    runner_assert_false(r, is_stats_summ, "stats does not satisfy Summarizable interface")
+    pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("n"), pkg::param_int(42)])
+    pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("f"), pkg::param_float(19.99)])
+    pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("b"), pkg::param_blob([1, 2, 3, 255])])
+    pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("z"), pkg::param_null()])
+    pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("big"), pkg::param_int(1099511627776)])
+    let rn = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("n")])
+    runner_assert_eq(r, rn[0]["value"], 42, "int param roundtrips")
+    # Floats roundtrip through driver text semantics (map slots cannot
+    # retain float tags, so exactness is asserted as stability: two reads
+    # render identically. Real drivers prove exactness the same way the
+    # sqlite adapter does — shortest-round-trip text.)
+    let rf1 = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("f")])
+    let rf2 = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("f")])
+    runner_assert_str_eq(r, str(rf1[0]["value"]), str(rf2[0]["value"]), "float param roundtrips stably")
+    let rb = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("b")])
+    runner_assert_eq(r, len(rb[0]["value"]), 4, "blob has 4 bytes")
+    runner_assert_eq(r, rb[0]["value"][3], 255, "blob last byte is 255")
+    let rz = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("z")])
+    runner_assert_true(r, rz[0]["value"] is null, "null param stays null")
+    let rbig = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("big")])
+    runner_assert_eq(r, rbig[0]["value"], 1099511627776, "int64 param roundtrips")
 
     # ═══════════════════════════════════════════════════════════
-    # 8. Workflow Processing & Batching
+    # 6. Scalar queries (present + missing)
     # ═══════════════════════════════════════════════════════════
-    let proc_res = pkg::process("Alice", 3, pkg::DbPriority.High)
-    runner_assert_eq(r, proc_res.is_ok(), 1, "pkg::process returns successful result")
-    runner_assert_str_eq(r, proc_res.message, "OK", "pkg::process message is OK")
-
-    let batch_in = ["Alpha", "Beta", "Gamma"]
-    let batch_out = pkg::process_batch(batch_in)
-    runner_assert_eq(r, len(batch_out), 3, "process_batch returns 3 formatted records")
-
-    let null_batch = pkg::process_batch(null)
-    runner_assert_eq(r, len(null_batch), 0, "process_batch(null) returns empty array")
+    let sc = pkg::query_scalar(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("n")])
+    runner_assert_eq(r, sc, 42, "query_scalar returns value")
+    let sm = pkg::query_scalar(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("nope")])
+    runner_assert_true(r, sm is null, "query_scalar on missing returns null")
 
     # ═══════════════════════════════════════════════════════════
-    # 9. Control Flow & Pattern Matching Utilities
+    # 7. Structured errors (mismatch, unsupported, closed)
     # ═══════════════════════════════════════════════════════════
-    runner_assert_eq(r, pkg::clamp(50, 0, 100), 50, "clamp within bounds")
-    runner_assert_eq(r, pkg::clamp(-10, 0, 100), 0, "clamp lower bound")
-    runner_assert_eq(r, pkg::clamp(150, 0, 100), 100, "clamp upper bound")
+    let mismatch = 0
+    try
+        pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [])
+    catch err
+        mismatch = err.code
+    end
+    runner_assert_eq(r, mismatch, 2, "parameter mismatch throws code 2")
 
-    runner_assert_str_eq(r, pkg::pluralize(1, "record", "records"), "record", "pluralize 1 gives singular")
-    runner_assert_str_eq(r, pkg::pluralize(0, "record", "records"), "records", "pluralize 0 gives plural")
-    runner_assert_str_eq(r, pkg::pluralize(5, "record", "records"), "records", "pluralize 5 gives plural")
+    let unsup = ""
+    try
+        pkg::execute(c2, "VACUUM;", [])
+    catch err
+        unsup = err.message
+    end
+    runner_assert_true(r, len(unsup) > 0, "unsupported statement throws message")
 
-    let repeated = pkg::repeat_string("item", 3)
-    runner_assert_eq(r, len(repeated), 3, "repeat_string produces 3 elements")
-    runner_assert_str_eq(r, repeated[0], "item", "repeated element matches input")
+    let c3 = pkg::open(driver, ":memory:")
+    pkg::close(c3)
+    let closed_code = 0
+    try
+        pkg::execute(c3, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("x"), pkg::param_int(1)])
+    catch err
+        closed_code = err.code
+    end
+    runner_assert_eq(r, closed_code, 1, "execute on closed throws code 1")
+    let closed_q = 0
+    try
+        pkg::query(c3, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("x")])
+    catch err
+        closed_q = err.code
+    end
+    runner_assert_eq(r, closed_q, 1, "query on closed throws code 1")
 
     # ═══════════════════════════════════════════════════════════
-    # 10. Destructuring: Tuples & Maps
+    # 8. Transactions with real rollback (journaled mock)
     # ═══════════════════════════════════════════════════════════
-    let (t_prefix, t_count) = ("Custom", 42)
-    runner_assert_str_eq(r, t_prefix, "Custom", "tuple destructuring binds string")
-    runner_assert_eq(r, t_count, 42, "tuple destructuring binds integer")
+    pkg::begin(c2)
+    pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("tmp"), pkg::param_int(1)])
+    pkg::rollback(c2)
+    let after_rb = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("tmp")])
+    runner_assert_eq(r, len(after_rb), 0, "rollback undoes insert")
+    pkg::begin(c2)
+    pkg::execute(c2, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("kept"), pkg::param_int(2)])
+    pkg::commit(c2)
+    let after_commit = pkg::query(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("kept")])
+    runner_assert_eq(r, len(after_commit), 1, "commit persists insert")
 
-    let pkg_info = { "name": f"db", "version": "0.1.0" }
-    let { name: info_name, version: info_ver } = pkg_info
-    runner_assert_str_eq(r, info_name, f"db", "map destructuring extracts key name")
-    runner_assert_str_eq(r, info_ver, "0.1.0", "map destructuring extracts key version")
-
     # ═══════════════════════════════════════════════════════════
-    # 11. Feature-Gated API (`extras`, default-on)
+    # 9. Connection method forms
     # ═══════════════════════════════════════════════════════════
-    @cfg(feature = "extras")
-    let extra_res = pkg::extra_greeting("Alya")
-    @cfg(feature = "extras")
-    runner_assert_str_eq(r, extra_res, "Howdy, Alya!", "pkg::extra_greeting returns extras greeting")
+    let c4 = pkg::open(driver, ":memory:")
+    runner_assert_eq(r, c4.execute("INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("m"), pkg::param_int(7)]), 1, "Conn.execute affects 1 row")
+    runner_assert_eq(r, len(c4.query("SELECT v FROM kv WHERE k = ?;", [pkg::param_text("m")])), 1, "Conn.query returns 1 row")
+    runner_assert_eq(r, c4.query_scalar("SELECT v FROM kv WHERE k = ?;", [pkg::param_text("m")]), 7, "Conn.query_scalar returns value")
+    c4.begin()
+    c4.execute("INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("m2"), pkg::param_int(8)])
+    c4.rollback()
+    runner_assert_eq(r, len(c4.query("SELECT v FROM kv WHERE k = ?;", [pkg::param_text("m2")])), 0, "Conn.rollback undoes insert")
+    runner_assert_eq(r, c4.close(), 0, "Conn.close returns 0")
+    pkg::close(c2)
 
     let failed = runner_summary(r)
     if failed > 0

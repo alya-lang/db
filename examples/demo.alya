@@ -1,163 +1,141 @@
 ## Example usage and walkthrough for db
 ## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+##
+## A minimal in-memory driver backs this demo. Real drivers (sqlite adapter
+## next) implement the same four hooks; every facade call below works
+## unchanged against them.
 
 import "../src/lib.alya" as pkg
 
+function demo_open(_path: string)
+    return { "store": map(), "tx": 0, "journal": null }
+end
+
+function demo_close(_handle) -> int
+    return 0
+end
+
+function demo_text_of(p) -> string
+    let s: string = p.sval
+    return s
+end
+
+function demo_float_text(p) -> string
+    let f: float = p.fval
+    return str(f)
+end
+
+function demo_value_of(p)
+    when p.kind
+        is pkg::ParamKind.Int, 1 then return p.ival
+        is pkg::ParamKind.Float, 2 then return demo_float_text(p)
+        is pkg::ParamKind.Text, 3 then return demo_text_of(p)
+        is pkg::ParamKind.Null, 4 then return null
+        is pkg::ParamKind.Blob, 5 then return p.bval
+        else throw pkg::db_error(3, "demo: unknown param kind")
+    end
+end
+
+function demo_snapshot(store)
+    let snap = map()
+    let ks = keys(store)
+    for k in ks
+        snap[k] = store[k]
+    end
+    return snap
+end
+
+function demo_execute(handle, sql: string, params: array) -> int
+    if sql == "BEGIN"
+        handle["tx"] = 1
+        handle["journal"] = demo_snapshot(handle["store"])
+        return 0
+    end
+    if sql == "COMMIT"
+        handle["tx"] = 0
+        handle["journal"] = null
+        return 0
+    end
+    if sql == "ROLLBACK"
+        handle["tx"] = 0
+        if handle["journal"] is not null
+            handle["store"] = handle["journal"]
+            handle["journal"] = null
+        end
+        return 0
+    end
+    if len(params) == 2
+        let store = handle["store"]
+        let kp = params[0]
+        if kp.kind == pkg::ParamKind.Text
+            let ks: string = kp.sval
+            store[ks] = demo_value_of(params[1])
+            return 1
+        end
+    end
+    throw pkg::db_error(3, "demo: unsupported statement")
+end
+
+function demo_query(handle, _sql: string, params: array) -> array
+    if len(params) == 1
+        let store = handle["store"]
+        let kp = params[0]
+        if kp.kind == pkg::ParamKind.Text
+            let ks: string = kp.sval
+            if ks in store
+                return [{ "key": ks, "value": store[ks] }]
+            end
+            return []
+        end
+    end
+    throw pkg::db_error(3, "demo: unsupported statement")
+end
+
+function demo_driver()
+    return pkg::Driver { name: "demo-mem", open_fn: demo_open, close_fn: demo_close, execute_fn: demo_execute, query_fn: demo_query }
+end
+
 function main()
-    say f"=== db Package Showcase ==="
-    say ""
+    say "==========================================="
+    say "          DB PACKAGE SHOWCASE              "
+    say "==========================================="
 
-    # ───────────────────────────────────────────────────────────
-    # 1. Basic Facade Greeting
-    # ───────────────────────────────────────────────────────────
-    say "--- 1. Facade Greeting ---"
-    let greeting_default = pkg::hello()
-    say "Default: " + greeting_default
+    # 1. Open through a driver value (no registry, no globals)
+    let conn = pkg::open(demo_driver(), ":memory:")
+    say "1. Connected with driver 'demo-mem'"
 
-    let greeting_custom = pkg::hello("Alya Developer")
-    say "Custom:  " + greeting_custom
-    say ""
+    # 2. Parameterized writes (quotes need no escaping)
+    pkg::execute(conn, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("name"), pkg::param_text("O'Brien")])
+    pkg::execute(conn, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("visits"), pkg::param_int(41)])
+    say "2. Inserted 2 rows with bound params"
 
-    # ───────────────────────────────────────────────────────────
-    # 2. Enumeration Values
-    # ───────────────────────────────────────────────────────────
-    say "--- 2. Enumeration Values ---"
-    say "DbStatus.Pending  = " + str(pkg::DbStatus.Pending)
-    say "DbStatus.Active   = " + str(pkg::DbStatus.Active)
-    say "DbStatus.Archived = " + str(pkg::DbStatus.Archived)
-    say "DbStatus.Error    = " + str(pkg::DbStatus.Error)
-
-    say "DbPriority.Low      = " + str(pkg::DbPriority.Low)
-    say "DbPriority.Normal   = " + str(pkg::DbPriority.Normal)
-    say "DbPriority.High     = " + str(pkg::DbPriority.High)
-    say "DbPriority.Critical = " + str(pkg::DbPriority.Critical)
-
-    say "DbStyle.Standard = " + str(pkg::DbStyle.Standard)
-    say "DbStyle.Formal   = " + str(pkg::DbStyle.Formal)
-    say "DbStyle.Casual   = " + str(pkg::DbStyle.Casual)
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 3. Struct Models & Constructors
-    # ───────────────────────────────────────────────────────────
-    say "--- 3. Struct Models & Constructors ---"
-    let cfg = pkg::new_config("Community", 5, pkg::DbPriority.High, pkg::DbStyle.Formal)
-    say "Config Name:     " + cfg.name
-    say "Config Count:    " + str(cfg.count)
-    say "Config Priority: " + str(cfg.priority)
-    say "Config Style:    " + str(cfg.style)
-    say "Config Enabled:  " + str(cfg.enabled)
-
-    let stats = pkg::make_stats(100, 92, 6, 2)
-    say "Stats Total:     " + str(stats.total)
-    say "Stats Passed:    " + str(stats.passed)
-    say "Stats Failed:    " + str(stats.failed)
-    say "Stats Skipped:   " + str(stats.skipped)
-    say "Stats Checked:   " + str(stats.total_checked())
-    say "Stats Rate:      " + stats.success_rate()
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 4. Struct Methods & Immutability
-    # ───────────────────────────────────────────────────────────
-    say "--- 4. Struct Methods & Immutability ---"
-    say "Summary:         " + cfg.summary()
-    say "Description:     " + cfg.describe()
-    say "Is Valid:        " + str(cfg.is_valid())
-    say "Is Enabled:      " + str(cfg.is_enabled())
-
-    let updated_cfg = cfg.with_name("Core Contributors")
-    say "Updated Name:    " + updated_cfg.name
-    say "Original Name:   " + cfg.name
-
-    let critical_cfg = cfg.with_priority(pkg::DbPriority.Critical)
-    say "Updated Prio:    " + str(critical_cfg.priority)
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 5. Result Container Pattern
-    # ───────────────────────────────────────────────────────────
-    say "--- 5. Result Container Pattern ---"
-    let ok_res = pkg::ok_result(42, "Processed payload successfully")
-    say "Ok Result is_ok:    " + str(ok_res.is_ok())
-    say "Ok Result message:  " + ok_res.message
-    say "Ok Result unwrap:   " + ok_res.unwrap_or("fallback")
-
-    let err_res = pkg::error_result("Processing failed", ["Disk full", "Permission denied"])
-    say "Err Result is_err:  " + str(err_res.is_error())
-    say "Err Result message: " + err_res.message
-    say "Err Result unwrap:  " + err_res.unwrap_or("safe default")
-    say "Err Count:          " + str(len(err_res.errors))
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 6. Structural Duck Typing (Interfaces)
-    # ───────────────────────────────────────────────────────────
-    say "--- 6. Duck Typing (Interfaces) ---"
-    if cfg is pkg::Summarizable
-        say "Summarizable dispatch: " + pkg::format_summary(cfg)
+    # 3. Reads: query, scalar, missing key
+    let rows = pkg::query(conn, "SELECT k, v FROM kv WHERE k = ?;", [pkg::param_text("name")])
+    say "3. Read back: " + str(rows[0]["value"])
+    let visits = pkg::query_scalar(conn, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("visits")])
+    say "   Visits: " + str(visits)
+    let missing = pkg::query_scalar(conn, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("nope")])
+    if missing is null
+        say "   Missing key reads null"
     end
-    if cfg is pkg::Describable
-        say "Describable dispatch:  " + pkg::format_description(cfg)
+
+    # 4. Transactions through the same facade
+    pkg::begin(conn)
+    pkg::execute(conn, "INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("tmp"), pkg::param_int(1)])
+    pkg::rollback(conn)
+    say "4. Rolled back; tmp rows: " + str(len(pkg::query(conn, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("tmp")])))
+
+    # 5. Structured errors are catchable structs
+    try
+        pkg::execute(conn, "VACUUM;", [])
+    catch err
+        say "5. Caught DbError code " + str(err.code) + ": " + err.message
     end
-    say ""
 
-    # ───────────────────────────────────────────────────────────
-    # 7. Workflow Processing & Batching
-    # ───────────────────────────────────────────────────────────
-    say "--- 7. Workflow Processing & Batching ---"
-    let single_res = pkg::process("Analytics", 3, pkg::DbPriority.High)
-    say "Single Process Result: " + pkg::format_result(single_res)
-
-    let items = ["Alpha", "Beta", "Gamma"]
-    let batch_res = pkg::process_batch(items)
-    say "Batch count: " + str(len(batch_res))
-    for b in batch_res
-        say "  - " + b
-    end
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 8. Control Flow & Pattern Matching Utilities
-    # ───────────────────────────────────────────────────────────
-    say "--- 8. Utility Functions ---"
-    say "Clamp (-5 in [0, 100]):  " + str(pkg::clamp(-5, 0, 100))
-    say "Clamp (50 in [0, 100]):  " + str(pkg::clamp(50, 0, 100))
-    say "Clamp (150 in [0, 100]): " + str(pkg::clamp(150, 0, 100))
-
-    say "Pluralize (1):           " + pkg::pluralize(1, "item", "items")
-    say "Pluralize (5):           " + pkg::pluralize(5, "item", "items")
-
-    let repeated = pkg::repeat_string("echo", 3)
-    say "Repeat string count:     " + str(len(repeated))
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 9. Destructuring: Tuples & Maps
-    # ───────────────────────────────────────────────────────────
-    say "--- 9. Destructuring ---"
-    let (label, count) = ("example", 42)
-    say "Tuple label: " + label
-    say "Tuple count: " + str(count)
-
-    let info = { "package": f"db", "version": "0.1.0" }
-    let { package: pkg_name, version: pkg_ver } = info
-    say "Map package: " + pkg_name
-    say "Map version: " + pkg_ver
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 10. Feature-Gated API (`extras`, default-on)
-    # ───────────────────────────────────────────────────────────
-    say "--- 10. Feature-Gated Extras ---"
-    @cfg(feature = "extras")
-    say "Extras greeting: " + pkg::extra_greeting("Developer")
-    @cfg(not(feature = "extras"))
-    say "Extras greeting: (disabled — rebuild with --features extras)"
-    say ""
-
-    say ""
-    say "Done!"
+    # 6. Method-call forms + close
+    conn.execute("INSERT INTO kv (k, v) VALUES (?, ?);", [pkg::param_text("m"), pkg::param_int(7)])
+    say "6. Method insert ok; closing returns " + str(conn.close())
+    say "==========================================="
 end
 
 main()
