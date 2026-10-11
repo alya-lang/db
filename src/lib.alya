@@ -294,7 +294,7 @@ pub function ConnPool.acquire(self: ConnPool)
     end
     while len(self.idle) > 0
         let c = self.idle.pop()
-        if c.is_open == true
+        if conn_is_open(c) == true
             self.active.push(c)
             return c
         end
@@ -324,7 +324,7 @@ pub function ConnPool.release(self: ConnPool, conn) -> int
         return 0
     end
     pool_take_active(self, conn.pool_id)
-    if conn.is_open == true
+    if conn_is_open(conn) == true
         self.idle.push(conn)
     end
     return 1

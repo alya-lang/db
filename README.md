@@ -163,6 +163,7 @@ main()
 | `ConnPool.invalidate(self, conn)` | `pub method` | Closes and discards a broken loan. |
 | `ConnPool.close(self)` | `pub method` | Drains idle loans; returns drained count. |
 | `ConnPool.size/idle_count/active_count(self)` | `pub method` | Pool gauges. |
+| `conn_is_open(c)` | `pub function` | Layout-pinned open-flag read for dynamic `Conn` values. |
 
 > [!TIP]
 > **Internal Helpers & Documentation:** Public symbols carry `##` Markdown docstrings for `alya doc`. Drivers convert `Param` to native binds inside their adapter; see the mock driver in `tests/test_basic.alya` for the reference implementation.

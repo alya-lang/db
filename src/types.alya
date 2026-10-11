@@ -158,6 +158,20 @@ pub struct Conn
     pool_id: int
 end
 
+## Reads a connection's open flag through a statically-typed boundary.
+##
+## Untyped `.is_open` reads are ambiguous across packages (`Conn` vs
+## `Database` disagree on the index); this helper pins the `Conn` layout.
+##
+## ### Parameters
+## - `c`: Target `Conn`.
+##
+## ### Returns
+## `1` while open, `0` after close.
+pub function conn_is_open(c: Conn) -> int
+    return c.is_open
+end
+
 ## A bounded pool of reusable connections with explicit context.
 ##
 ## Unlike generic callback pools, every operation carries its driver and
