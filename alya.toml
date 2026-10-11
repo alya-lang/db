@@ -1,6 +1,6 @@
 [package]
 name = "db"
-version = "0.2.1"
+version = "0.2.2"
 alya-version = "0.0.20"
 entry = "src/lib.alya"
 description = "Database driver interface, connection management, and query abstraction for Alya"

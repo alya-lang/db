@@ -223,8 +223,9 @@ function main()
     # ═══════════════════════════════════════════════════════════
     let sc = pkg::query_scalar(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("n")])
     runner_assert_eq(r, sc, 42, "query_scalar returns value")
-    let sm = pkg::query_scalar(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("nope")])
-    runner_assert_true(r, sm is null, "query_scalar on missing returns null")
+    # Inline null check: null from an untyped return loses its tag when
+    # let-bound (compiler follow-up to alya-lang/alya#168).
+    runner_assert_true(r, pkg::query_scalar(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("nope")]) is null, "query_scalar on missing returns null")
 
     # ═══════════════════════════════════════════════════════════
     # 7. Structured errors (mismatch, unsupported, closed)
@@ -344,7 +345,7 @@ function test_pool(r)
     let c = pool.acquire()
     runner_assert_eq(r, pool.invalidate(c), 1, "invalidate returns 1")
     runner_assert_eq(r, pool.size(), 0, "pool size is 0 after invalidate")
-    runner_assert_true(r, c.is_open == false, "invalidated connection is closed")
+    runner_assert_true(r, pkg::conn_is_open(c) == false, "invalidated connection is closed")
 
     let d = pool.acquire()
     d.close()
