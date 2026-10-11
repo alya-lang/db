@@ -114,8 +114,8 @@ function main()
     say "3. Read back: " + str(rows[0]["value"])
     let visits = pkg::query_scalar(conn, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("visits")])
     say "   Visits: " + str(visits)
-    # Inline null check: null from an untyped return loses its tag when
-    # let-bound (compiler follow-up to alya-lang/alya#168).
+    # Inline null check: kept as a compatible guard from the
+    # alya-lang/alya#170 era (let-bound dynamic nulls demoted then).
     if pkg::query_scalar(conn, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("nope")]) is null
         say "   Missing key reads null"
     end

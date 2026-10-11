@@ -223,8 +223,8 @@ function main()
     # ═══════════════════════════════════════════════════════════
     let sc = pkg::query_scalar(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("n")])
     runner_assert_eq(r, sc, 42, "query_scalar returns value")
-    # Inline null check: null from an untyped return loses its tag when
-    # let-bound (compiler follow-up to alya-lang/alya#168).
+    # Inline null check: kept as a compatible guard from the
+    # alya-lang/alya#170 era (let-bound dynamic nulls demoted then).
     runner_assert_true(r, pkg::query_scalar(c2, "SELECT v FROM kv WHERE k = ?;", [pkg::param_text("nope")]) is null, "query_scalar on missing returns null")
 
     # ═══════════════════════════════════════════════════════════
